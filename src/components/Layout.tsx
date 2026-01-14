@@ -38,7 +38,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 Meus acessos
               </NavLink>
             )}
-            {hydrated && isAdmin(user) && (
+            {hydrated && isAdmin(user) && user?.email === 'gcgean@hotmail.com' && (
               <NavLink
                 to="/admin"
                 className={({ isActive }) =>
@@ -48,7 +48,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                   )
                 }
               >
-                Admin
+                Painel Admin
               </NavLink>
             )}
             <div className="w-px self-stretch bg-white/10" />

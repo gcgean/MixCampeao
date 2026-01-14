@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { pool } from '../db/pool.js'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { sendError, sendOk } from '../utils/responses.js'
-import { createMockPixCharge, generateTxid, signWebhookPayload } from '../utils/pix.js'
+import { createPixCharge, generateTxid, signWebhookPayload } from '../utils/pix.js'
 
 const router = Router()
 
@@ -51,7 +51,15 @@ router.post('/pix/create', requireAuth, async (req: Request, res: Response) => {
 
   const amount = Number(segment.price_pix)
   const txid = generateTxid()
-  const charge = await createMockPixCharge(txid, amount)
+  
+  let charge
+  try {
+    charge = await createPixCharge(txid, amount)
+  } catch (err: any) {
+    console.error(err)
+    sendError(res, 500, 'INTERNAL_ERROR', 'Erro ao criar cobrança Pix')
+    return
+  }
 
   const insertRes = await pool.query<{ id: string }>(
     `INSERT INTO purchases (user_id, segment_id, status, amount, txid, pix_payload)
@@ -97,23 +105,48 @@ router.get('/:id', requireAuth, async (req: Request, res: Response) => {
 })
 
 router.post('/pix/webhook', async (req: Request, res: Response) => {
-  const signature = req.header('x-psp-signature')
   const rawBody = req.rawBody
-  if (!signature || !rawBody) {
-    sendError(res, 401, 'UNAUTHORIZED', 'Assinatura ausente')
-    return
-  }
-  const expected = signWebhookPayload(rawBody)
-  if (signature !== expected) {
-    sendError(res, 401, 'UNAUTHORIZED', 'Assinatura inválida')
+  
+  let payload: any
+  try {
+    if (rawBody) {
+        payload = JSON.parse(rawBody.toString('utf8'))
+    } else {
+        payload = req.body
+    }
+  } catch {
+    sendError(res, 400, 'VALIDATION_ERROR', 'JSON inválido')
     return
   }
 
-  let payload: unknown
-  try {
-    payload = JSON.parse(rawBody.toString('utf8'))
-  } catch {
-    sendError(res, 400, 'VALIDATION_ERROR', 'JSON inválido')
+  // Check if it's Efí payload (contains "pix" array)
+  if (payload.pix && Array.isArray(payload.pix)) {
+      console.log('Received Efí webhook:', JSON.stringify(payload))
+
+      for (const p of payload.pix) {
+          if (p.txid) {
+             await pool.query(
+                `UPDATE purchases
+                 SET status = 'PAID', paid_at = COALESCE(paid_at, now()), pix_payload = $2
+                 WHERE txid = $1 AND status <> 'PAID'`,
+                [p.txid, JSON.stringify(p)],
+             )
+          }
+      }
+      sendOk(res, 200, { ok: true })
+      return
+  }
+
+  // Fallback to Mock implementation with Signature Check
+  const signature = req.header('x-psp-signature')
+  if (!signature || !rawBody) {
+      sendError(res, 401, 'UNAUTHORIZED', 'Assinatura ausente ou payload desconhecido')
+      return
+  }
+
+  const expected = signWebhookPayload(rawBody)
+  if (signature !== expected) {
+    sendError(res, 401, 'UNAUTHORIZED', 'Assinatura inválida')
     return
   }
 
@@ -145,4 +178,3 @@ router.post('/pix/webhook', async (req: Request, res: Response) => {
 })
 
 export default router
-
